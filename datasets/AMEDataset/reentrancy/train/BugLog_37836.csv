@@ -1,0 +1,27 @@
+loc,length,bug type,approach
+10,3,Safe,Etherscan
+14,3,Safe,Etherscan
+18,3,Safe,Etherscan
+22,3,Safe,Etherscan
+35,3,Safe,Etherscan
+39,4,Safe,Etherscan
+44,3,Safe,Etherscan
+48,6,Safe,Etherscan
+80,4,Safe,Etherscan
+85,3,Safe,Etherscan
+88,3,Safe,Etherscan
+91,3,Safe,Etherscan
+95,10,Safe,Etherscan
+106,12,Safe,Etherscan
+119,7,Safe,Etherscan
+150,7,Safe,Etherscan
+158,3,time_manipulation,Etherscan
+170,3,Safe,Etherscan
+174,17,Safe,Etherscan
+193,3,Safe,Etherscan
+198,63,Safe,Etherscan
+264,6,Safe,Etherscan
+274,6,Safe,Etherscan
+281,7,Safe,Etherscan
+289,7,Safe,Etherscan
+297,4,Safe,Etherscan

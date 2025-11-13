@@ -1,0 +1,8 @@
+loc,length,bug type,approach
+19,7,Reentrancy,Etherscan
+44,4,Safe,Etherscan
+49,3,Safe,Etherscan
+53,33,time_manipulation,Etherscan
+87,10,unchecked_low_calls,Etherscan
+99,11,Safe,Etherscan
+112,3,Safe,Etherscan

@@ -1,0 +1,4 @@
+loc,length,bug type,approach
+14,4,Safe,Etherscan
+19,9,Safe,Etherscan
+29,7,Reentrancy,Etherscan

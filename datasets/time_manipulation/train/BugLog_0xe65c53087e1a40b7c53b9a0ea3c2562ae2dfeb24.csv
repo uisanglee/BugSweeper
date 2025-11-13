@@ -1,0 +1,5 @@
+loc,length,bug type,approach
+10,3,Safe,Etherscan
+14,5,Safe,Etherscan
+26,9,time_manipulation,Etherscan
+36,8,time_manipulation,Etherscan

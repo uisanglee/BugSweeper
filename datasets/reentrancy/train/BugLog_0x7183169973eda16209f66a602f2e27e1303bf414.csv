@@ -1,0 +1,15 @@
+loc,length,bug type,approach
+25,3,Safe,Etherscan
+29,4,Safe,Etherscan
+34,3,Safe,Etherscan
+38,4,Safe,Etherscan
+47,4,Safe,Etherscan
+52,4,Safe,Etherscan
+62,5,Safe,Etherscan
+77,3,Safe,Etherscan
+81,5,Safe,Etherscan
+87,20,unchecked_low_calls,Etherscan
+109,3,Safe,Etherscan
+113,5,Safe,Etherscan
+119,2,Safe,Etherscan
+122,3,Safe,Etherscan

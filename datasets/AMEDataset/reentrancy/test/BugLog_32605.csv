@@ -1,0 +1,25 @@
+loc,length,bug type,approach
+6,4,Safe,Etherscan
+15,5,Safe,Etherscan
+28,4,Reentrancy,Etherscan
+83,4,Safe,Etherscan
+88,4,Safe,Etherscan
+93,4,Safe,Etherscan
+98,4,Safe,Etherscan
+103,5,Safe,Etherscan
+109,4,Safe,Etherscan
+119,7,Safe,Etherscan
+131,6,Safe,Etherscan
+143,7,Safe,Etherscan
+155,6,Safe,Etherscan
+163,6,Safe,Etherscan
+171,9,Safe,Etherscan
+182,9,Safe,Etherscan
+193,10,Safe,Etherscan
+205,9,Safe,Etherscan
+216,8,Safe,Etherscan
+226,9,Safe,Etherscan
+239,12,Safe,Etherscan
+254,7,Safe,Etherscan
+262,3,Safe,Etherscan
+266,3,Safe,Etherscan
