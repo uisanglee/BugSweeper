@@ -720,6 +720,134 @@ def preproc(save_file, file_path, name, bug_log = None, error_file = None, class
 
 	H = nx.relabel_nodes(H, dic)
 	subgraph, pool_idx = sampling(H, class_name, src_dict)
+
+	def _collect_parents_by_child_edges(g):
+		parents = {}
+		for u, v, attr in g.edges(data=True):
+			if attr.get('edge_attr') != 'Child':
+				continue
+			parents.setdefault(v, []).append(u)
+		for n in parents:
+			parents[n].sort()
+		return parents
+
+	def _compute_depth_by_child_edges(g, nodes, parents):
+		"""
+		Compute deterministic root-to-node depth on AST Child edges.
+		If multiple roots/parents exist, use the minimum depth path and smallest parent id tie-break.
+		"""
+		roots = [n for n in nodes if n not in parents]
+		if len(roots) == 0:
+			roots = [min(nodes)]
+
+		depth = {r: 0 for r in roots}
+		queue = list(sorted(roots))
+
+		while len(queue) > 0:
+			cur = queue.pop(0)
+			for child in g.successors(cur):
+				edge_attr = g.edges[cur, child].get('edge_attr')
+				if edge_attr != 'Child':
+					continue
+				next_depth = depth[cur] + 1
+				if child not in depth or next_depth < depth[child]:
+					depth[child] = next_depth
+					queue.append(child)
+
+		for n in nodes:
+			if n not in depth:
+				depth[n] = 0
+		return depth
+
+	def _pool_ids_by_depth_stride(nodes, parents, depth, stride):
+		"""
+		Language-agnostic deterministic pooling: assign each node to an ancestor
+		whose depth is snapped by `stride` (e.g., every 2 levels).
+		"""
+		assignments = []
+		for node in nodes:
+			cur = node
+			visited = set()
+			while cur not in visited:
+				visited.add(cur)
+				if depth.get(cur, 0) % stride == 0:
+					break
+				if cur not in parents:
+					break
+				cur = parents[cur][0]
+			assignments.append(cur)
+
+		ordered_anchors = sorted(set(assignments))
+		anchor2id = {a: i for i, a in enumerate(ordered_anchors)}
+		return [anchor2id[a] for a in assignments]
+
+	def _pool_ids_by_ancestor_types(g, nodes, anchor_types):
+		"""
+		Deterministic hard assignment of each node to the nearest ancestor whose
+		node_type is one of `anchor_types` following AST Child edges.
+		"""
+		parents = _collect_parents_by_child_edges(g)
+		anchor_nodes = [n for n in nodes if g.nodes[n].get('node_type') in anchor_types]
+
+		if len(anchor_nodes) == 0:
+			# fallback: all nodes in one group
+			return [0 for _ in nodes]
+
+		fallback_anchor = min(anchor_nodes)
+		assignments = []
+
+		for node in nodes:
+			cur = node
+			visited = set()
+			matched = None
+
+			while cur not in visited:
+				visited.add(cur)
+				if g.nodes[cur].get('node_type') in anchor_types:
+					matched = cur
+					break
+
+				if cur not in parents:
+					break
+				cur = parents[cur][0]
+
+			if matched is None:
+				matched = fallback_anchor
+
+			assignments.append(matched)
+
+		ordered_anchors = sorted(set(assignments))
+		anchor2id = {a: i for i, a in enumerate(ordered_anchors)}
+		return [anchor2id[a] for a in assignments]
+
+	def _compose_levels(prev_level, next_level_on_nodes):
+		"""
+		Convert node-level assignments into previous-cluster-level assignments.
+		Each previous cluster is assigned to the majority next-level id.
+		"""
+		cluster_members = {}
+		for idx, c in enumerate(prev_level):
+			cluster_members.setdefault(c, []).append(idx)
+
+		new_level = []
+		for c in sorted(cluster_members.keys()):
+			votes = {}
+			for node_idx in cluster_members[c]:
+				next_c = next_level_on_nodes[node_idx]
+				votes[next_c] = votes.get(next_c, 0) + 1
+			best = sorted(votes.items(), key=lambda x: (-x[1], x[0]))[0][0]
+			new_level.append(best)
+
+		uniq = sorted(set(new_level))
+		relabel = {old: i for i, old in enumerate(uniq)}
+		return [relabel[v] for v in new_level]
+
+	# Cross-language semantic anchors (broad AST naming conventions).
+	anchor_schemas = [
+		['FunctionDefinition', 'FunctionDef', 'MethodDef', 'Lambda', 'ClassDef', 'Module'],
+		['IfStatement', 'If', 'For', 'ForStatement', 'While', 'WhileStatement', 'Switch', 'Match', 'Try', 'Catch', 'Block'],
+		['ExpressionStatement', 'Expr', 'Statement', 'Return', 'Yield', 'Assign', 'Break', 'Continue', 'Throw', 'Raise']
+	]
 	
 	idx2pool = {}
 	
@@ -728,10 +856,32 @@ def preproc(save_file, file_path, name, bug_log = None, error_file = None, class
 			idx2pool[idx] = pool_id
 	
 	for idx in subgraph:
-		sub_pool_ids = [ idx2pool[n] for n in subgraph[idx].nodes()]		
+		node_order = list(subgraph[idx].nodes())
+		sub_pool_ids = [idx2pool[n] for n in node_order]
+		parents = _collect_parents_by_child_edges(subgraph[idx])
+		depth = _compute_depth_by_child_edges(subgraph[idx], node_order, parents)
+
+		node_level_assignments = [
+			_pool_ids_by_ancestor_types(subgraph[idx], node_order, schema)
+			for schema in anchor_schemas
+		]
+
+		# Language-agnostic structural pooling levels that work for arbitrary ASTs.
+		node_level_assignments.extend([
+			_pool_ids_by_depth_stride(node_order, parents, depth, stride=2),
+			_pool_ids_by_depth_stride(node_order, parents, depth, stride=4),
+		])
+
+		hier_pool_levels = [sub_pool_ids]
+		prev = sub_pool_ids
+		for node_level in node_level_assignments:
+			next_level = _compose_levels(prev, node_level)
+			hier_pool_levels.append(next_level)
+			prev = next_level
 		
 		pyg = read_graphs(subgraph[idx], name)
 		pyg.pool = sub_pool_ids
+		pyg.pool_levels = hier_pool_levels
 
 		DATA_LIST.append(pyg)
 

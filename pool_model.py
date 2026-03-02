@@ -51,8 +51,51 @@ class PoolEncoder(torch.nn.Module):
 			self.convs.append(SAGEConv(hidden_channels, hidden_channels))
 			
 		self.relu = nn.ReLU()
+
+	@staticmethod
+	def _normalize_assignment_per_graph(pool_per_graph: list, device: torch.device):
+		"""
+		Flatten per-graph local cluster ids into a global contiguous assignment tensor.
+		"""
+		flat_pool = []
+		batch_idx = []
+		offset = 0
+
+		for big_graph_id, local_assign in enumerate(pool_per_graph):
+			if len(local_assign) == 0:
+				continue
+			unique_subs = sorted(set(local_assign))
+			mapping = {local_id: global_id for global_id, local_id in enumerate(unique_subs, start=offset)}
+			flat_pool.extend(mapping[l] for l in local_assign)
+			batch_idx.extend([big_graph_id] * len(local_assign))
+			offset += len(unique_subs)
+
+		pool_idx = torch.tensor(flat_pool, dtype=torch.long, device=device)
+		batch = torch.tensor(batch_idx, dtype=torch.long, device=device)
+		return pool_idx, batch
+
+	@staticmethod
+	def _coarsen_graph(x: Tensor, edge_index: Tensor, batch: Tensor, assignment: Tensor):
+		x_pooled = global_mean_pool(x, assignment)
+		batch_pooled = global_max_pool(batch.unsqueeze(-1).float(), assignment).squeeze(1).long()
+
+		src, dst = edge_index
+		src_p = assignment[src]
+		dst_p = assignment[dst]
+
+		edge_index_pooled, _ = coalesce(
+			torch.stack([src_p, dst_p], dim=0),
+			None,
+			src_p.max().item() + 1,
+			src_p.max().item() + 1,
+		)
+
+		mask = edge_index_pooled[0] != edge_index_pooled[1]
+		edge_index_pooled = edge_index_pooled[:, mask]
+
+		return x_pooled, edge_index_pooled, batch_pooled
 		
-	def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, pool: list) -> Tensor:
+	def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, pool: list, pool_levels: list = None) -> Tensor:
 		
 		mask = (x != 0).float()                 
 		node_length_tensor = mask.sum(dim=1).clamp(min=1)	
@@ -60,27 +103,7 @@ class PoolEncoder(torch.nn.Module):
 		x_tensor = x
 		node_embeddings = self.embed(x_tensor)
 		
-		flat_pool = []
-		batch_idx = []
-		offset = 0
-		
-		for big_graph_id, pool_sub in enumerate(pool):
-			# 1) 이 그래프에 등장하는 sub-graph ID의 개수(n_sub)를 알아내고
-			unique_subs = sorted(set(pool_sub))
-			n_sub       = len(unique_subs)
-			# 2) 로컬 ID → 글로벌 ID 매핑 생성
-			mapping = { local_id: global_id
-						for global_id, local_id in enumerate(unique_subs, start=offset) }
-			# 3) 풀(flat) 리스트에 글로벌 ID를 채워넣고,
-			flat_pool.extend(mapping[l] for l in pool_sub)
-			#    batch 텐서용으로 어느 그래프 소속인지도 같이 기록
-			batch_idx.extend([big_graph_id] * len(pool_sub))
-			# 4) 다음 그래프의 글로벌 offset 을 늘려줌
-			offset += n_sub
-		
-		# 이제 flat_pool, batch_idx 길이는 x.size(0) 과 동일
-		pool_idx = torch.tensor(flat_pool, dtype=torch.long, device=x.device)
-		batch = torch.tensor(batch_idx, dtype=torch.long, device=x.device)
+		pool_idx, batch = self._normalize_assignment_per_graph(pool, x.device)
 							
 		mask = (x_tensor != 0).float()
 		sum_embeddings = (node_embeddings * mask.unsqueeze(-1)).sum(dim=1)
@@ -93,23 +116,18 @@ class PoolEncoder(torch.nn.Module):
 			x = self.relu(x)
 			x = F.dropout(x, p=0.5, training=self.training)
 		
-		x_pooled = global_mean_pool(x, pool_idx)
-		batch_pooled = global_max_pool(batch.unsqueeze(-1).float(), pool_idx)
-		batch_pooled = batch_pooled.squeeze(1).long()
-		
-		src, dst = edge_index
-		src_p = pool_idx[src]
-		dst_p = pool_idx[dst]
-		
-		edge_index_pooled, _ = coalesce(
-			torch.stack([src_p, dst_p], dim=0),
-			None,
-			src_p.max().item() + 1,
-			src_p.max().item() + 1
-		)
-		
-		mask = edge_index_pooled[0] != edge_index_pooled[1]
-		edge_index_pooled = edge_index_pooled[:, mask]
+		x_pooled, edge_index_pooled, batch_pooled = self._coarsen_graph(x, edge_index, batch, pool_idx)
+
+		if pool_levels is not None and len(pool_levels) > 1:
+			# pool_levels[0] is expected to match `pool`; apply remaining levels hierarchically.
+			for level_assign in pool_levels[1:]:
+				level_idx, level_batch = self._normalize_assignment_per_graph(level_assign, x.device)
+				x_pooled, edge_index_pooled, batch_pooled = self._coarsen_graph(
+					x_pooled,
+					edge_index_pooled,
+					level_batch,
+					level_idx,
+				)
 		
 		return x_pooled, edge_index_pooled, batch_pooled
 		
@@ -141,8 +159,8 @@ class GNNModel(torch.nn.Module):
 		
 		self.classifier = GraphClassifier(hidden_channels, out_channels)
 
-	def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, pool: list) -> Tensor:
-		x_pooled, edge_index_pooled, batch_pooled = self.encoder(x, edge_index, batch, pool)
+	def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, pool: list, pool_levels: list = None) -> Tensor:
+		x_pooled, edge_index_pooled, batch_pooled = self.encoder(x, edge_index, batch, pool, pool_levels)
 		
 		for conv in self.convs:
 			x_pooled = conv(x_pooled, edge_index_pooled)

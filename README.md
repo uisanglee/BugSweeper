@@ -1,142 +1,125 @@
-# BugSweeper: Smart Contract Vulnerability Detection Pipeline
+# BugSweeper
 
-**BugSweeper** provides an end-to-end workflow to convert Solidity contracts into function-level AST graphs (FLAGs) and train/evaluate a Graph Neural Network (GNN) using PyTorch Geometric aimed at vulnerability detection.
+AST 기반 코드 그래프 분류(특히 스마트컨트랙트 취약점 분류)를 위한 연구 코드입니다.
+핵심 아이디어는 **deterministic hierarchical pooling**으로, 단순 global pooling 대신 AST 구조를 이용해 계층적으로 그래프를 coarsening 합니다.
 
----
+## What this repo includes
 
-## Table of Contents
-
-* [Project Overview](#project-overview)
-* [Components](#components)
-* [Installation & Requirements](#installation--requirements)
-* [Directory Structure](#directory-structure)
-* [Usage](#usage)
-
-  * [1) Data Preprocessing](#1-data-preprocessing)
-  * [2) Model Training](#2-model-training)
-  * [3) Model Evaluation](#3-model-evaluation)
-* [Parameters & Configuration](#parameters--configuration)
-* [References](#references)
+- `preprocess.py`: Solidity 코드 → AST(JSON) → 그래프(PyG Data) 전처리
+- `pool_model.py`: 계층 풀링을 지원하는 GNN 인코더/분류기
+- `train.py`: 학습/검증/테스트
+- `scripts/run_ablation_matrix.sh`: seed × pooling 설정 ablation 실행
+- `scripts/summarize_metrics.py`: 실험 CSV 결과 집계
+- `docs/benchmark_matrix_template.md`: Devign/Big-Vul/Smart-contract 벤치마크 템플릿
+- `docs/table_templates.md`: 논문용 결과표 템플릿
 
 ---
 
-## Project Overview
+## 1) 빠른 실행 가이드
 
-BugSweeper:
-
-1. **AST Preprocessing**: Uses `solc` to generate AST JSON, parses and cleans with NetworkX.
-2. **FLAG Generation & Merging**: Extracts function-level subgraphs and merges related code with recursive depth control (`coverage`).
-3. **Dataset Construction**: Converts each FLAG into a `torch_geometric.data.Data` object and wraps in `MyDataset`.
-4. **Training & Evaluation**: Trains a GNN with logit adjustment for class imbalance, validates via macro F1, and tests with detailed per-class metrics.
-
----
-
-## Components
-
-| File               | Description                                                              |
-| ------------------ | ------------------------------------------------------------------------ |
-| `preprocess.py`    | AST JSON generation, Graph Constructor                                   |
-| `train.py`         | Model definition, training loop, validation, checkpointing, and testing. |
-| `utils.py`         | `MyDataset` wrapper and helper functions.                                |
-| `config.py`        | Global settings: dataset paths, regex patterns, class mappings.          |
-| `requirements.txt` | Python package dependencies.                                             |
-
----
-
-## Installation & Requirements
+### 1-1. 환경 준비
 
 ```bash
-git clone https://github.com/yourusername/BugSweeper.git
-cd BugSweeper
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+# 필요 시(환경에 따라)
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install torch_geometric
 ```
 
-* **Python**: 3.8+
-* **PyTorch**: >=1.12
-* **PyTorch Geometric**, **networkx**, **chardet**, **pandas**, **scikit-learn**, **solc-select**
+### 1-2. Solidity 컴파일러 준비
 
----
-
-## Directory Structure
-
-```plaintext
-BugSweeper/
-├── config.py
-├── utils.py
-├── preprocess.py          # AST preprocessing pipeline
-├── train.py               # Training & evaluation script
-├── requirements.txt
-├── models/                # Saved model checkpoints
-├── datasets/              # Raw & processed datasets
-│   ├── function/
-│   │   ├── train/
-│   │   ├── valid/
-│   │   └── test/
-│   └── contract/
-└── README.md              # This file
-```
-
----
-
-## Usage
-
-### 1) Data Preprocessing
+본 프로젝트 전처리는 `solc`가 필요합니다.
 
 ```bash
-python preprocess.py \
-  --coverage 4 \            # Recursive FLAG merging depth (default: 4)   \
-  --mode train \            # Mode: train | valid | test | DApp    \
-  --level function          # Level: function | contract(not available)
+# solc-select 사용 예시
+pip install solc-select
+solc-select install 0.8.20
+solc-select use 0.8.20
+solc --version
 ```
 
-* Outputs: `datasets/<level>/<mode>/<coverage>/raw/data_list.pkl` and `processed/data.pt`
+### 1-3. 전처리
 
-### 2) Model Training
+```bash
+python preprocess.py -m train -l function -c 4
+python preprocess.py -m valid -l function -c 4
+python preprocess.py -m test  -l function -c 4
+```
+
+### 1-4. 기본 학습
 
 ```bash
 python train.py \
-  --coverage 4 \           # Must match preprocessing coverage  \
-  --model POOL \           # Options: POOL  \
-  --loss ce \              # Loss function: ce (CrossEntropy)   \
-  --lr 0.001 \             # Learning rate   \
-  --wd 5e-4 \              # Weight decay   \
-  --epochs 50 \            # Total epochs   \
-  --batch_size 64           # Batch size
+  -S train -M POOL -L function \
+  --coverage 4 \
+  --epochs 50 \
+  --batch_size 64 \
+  --gpu 0
 ```
 
-* Best checkpoint saved as `models/<coverage>_<epochs>_<loss>.pth` based on validation macro-F1.
-
-### 3) Model Evaluation
+### 1-5. 계층 풀링 ablation 실험
 
 ```bash
-python train.py \
-  --coverage 4 \           # Match coverage      \
-  --load models/4_50_ce.pth \  # Pretrained checkpoint path    \
-  --mode test              # Run in test mode
+bash scripts/run_ablation_matrix.sh smart-contract 4 0
 ```
 
-* Prints macro-averaged and per-class precision, recall, and F1 scores.
+- 기본 조합:
+  - `single,0` (기본 단일 풀링)
+  - `hier,2`
+  - `hier,4`
+  - `hier,0` (모든 계층)
+- 기본 seed: `42, 7, 13`
+
+### 1-6. 결과 집계
+
+```bash
+python scripts/summarize_metrics.py models/metrics_4_ce.csv
+```
 
 ---
 
-## Parameters & Configuration
+## 2) 주요 실험 인자
 
-* `coverage`: Integer depth for recursive FLAG merging.
-* `mode`: `train` | `valid` | `test` | `DApp`.
-* `level`: `function` | `contract`.
-* `model`: GNN architecture choice.
-* `loss`: Loss type (`ce`).
-* `lr`, `wd`, `epochs`, `batch_size`: Training hyperparameters.
+`train.py`에서 사용:
 
----
-
-## References
-
-1. Zhuang et al., TMP: Smart Contract Vulnerability Detection using GNN, ASIA CCS 2021.
-2. Liu et al., AME: Attention-based Smart Contract Security, CCS 2021.
-3. Wu et al., Peculiar: GraphCodeBERT-based Vulnerability Detection, EMNLP 2021.
-4. Zhang et al., ReVulDL: Reentrancy Detection with Deep Learning, ICSE 2022.
-5. Wang, Wenhan, et al., Detecting code clones with graph neural network and flow-augmented abstract syntax tree, SANER(IEEE), 2020.
+- `--seed`: 실험 시드
+- `--pool_mode {single,hier}`
+- `--max_pool_levels N` (0이면 가능한 모든 계층 사용)
+- `--coverage`: 전처리 coverage와 반드시 일치
 
 ---
 
+## 3) Private GitHub repo 생성 (자동화 스크립트)
+
+현재 컨테이너에서 GitHub CLI(`gh`) 및 토큰이 기본 제공되지 않을 수 있어,
+`curl + GitHub API` 방식 스크립트를 제공합니다.
+
+```bash
+bash scripts/create_private_repo.sh <github_token> <owner_or_org> <new_repo_name>
+```
+
+예시:
+
+```bash
+bash scripts/create_private_repo.sh $GITHUB_TOKEN my-org BugSweeper-private
+```
+
+성공 시:
+- private repo 생성
+- 현재 코드를 해당 remote에 push 할 수 있는 URL 출력
+
+> 토큰 권한: `repo` (private repository 생성/푸시 가능)
+
+---
+
+## 4) 논문 작성용 템플릿
+
+- 벤치마크/비교 매트릭스: `docs/benchmark_matrix_template.md`
+- 결과표(Table 1/2/3) 템플릿: `docs/table_templates.md`
+
+---
+
+## 5) 참고
+
+- 데이터/스플릿/토크나이저 설정은 `config.py`, `models/tokenizer/`를 확인하세요.
+- 전처리 산출물(`preprocessed/...`)이 없으면 학습이 시작되지 않습니다.

@@ -28,6 +28,11 @@ def parameter_parser():
 	
 	parser.add_argument('--coverage', type=str, default=4, help='coverage')
 	parser.add_argument('--load', type=str, default='False', help='load model')
+	parser.add_argument('--seed', type=int, default=42, help='random seed')
+	parser.add_argument('--pool_mode', type=str, default='hier', choices=['single', 'hier'],
+		help='single: use only base pool assignment, hier: use all available hierarchical levels')
+	parser.add_argument('--max_pool_levels', type=int, default=0,
+		help='0 means use all available levels; positive value caps hierarchy depth used by model')
 	
 	parser.add_argument('--gpu', type=str, default='0', help='gpu id')
 

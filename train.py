@@ -3,9 +3,9 @@ import numpy as np
 import random
 import os
 import json
+import csv
 
 import config as config
-import model as mdl
 import pool_model as pmdl
 import utils
 from utils import MyDataset
@@ -30,8 +30,6 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.metrics.pairwise import cosine_similarity
 
-
-import GCL.augmentors as A
 
 from tqdm import tqdm
 from tokenizers import ByteLevelBPETokenizer
@@ -91,13 +89,14 @@ def set_seed(seed):
 	torch.backends.cudnn.deterministic = True
 	torch.backends.cudnn.benchmark = False
 
-ranseed = 42
+ranseed = args.seed
 set_seed(ranseed)
 print(f'seed:{ranseed}')
 
 print('Using Device:', device)
-print('Current cuda device:', torch.cuda.current_device())
-if device.type == 'cuda': print(torch.cuda.get_device_name(0))
+if device.type == 'cuda':
+	print('Current cuda device:', torch.cuda.current_device())
+	print(torch.cuda.get_device_name(0))
 			
 @torch.no_grad()
 
@@ -130,10 +129,21 @@ def valid(loader, model, rank, epoch, logit_adjustment=None):
 	
 	name_list = []
 	
+	def _select_pool_levels(item):
+		if args.pool_mode == 'single':
+			return None
+		levels = getattr(item, 'pool_levels', None)
+		if levels is None:
+			return None
+		if args.max_pool_levels > 0:
+			return levels[:args.max_pool_levels]
+		return levels
+
 	for i, batch in enumerate(loader):
 		batch = batch.to(rank)
 		if args.model == 'POOL' or args.model == 'rggnn' or args.model == 'rggnn_gat':
-			output = model(batch.x, batch.edge_index.to(rank), batch.batch, batch.pool)
+			pool_levels = _select_pool_levels(batch)
+			output = model(batch.x, batch.edge_index.to(rank), batch.batch, batch.pool, pool_levels)
 		else:
 			output = model(batch.x, batch.edge_index.to(rank), batch.batch)
 		
@@ -212,13 +222,24 @@ def contract_test(model, load_path=None, logit_adjustment=None):
 	
 	logit_adjustment = compute_logit_adjustment(class_count, tau=1.0).to(device)
 
+	def _select_pool_levels(item):
+		if args.pool_mode == 'single':
+			return None
+		levels = getattr(item, 'pool_levels', None)
+		if levels is None:
+			return None
+		if args.max_pool_levels > 0:
+			return levels[:args.max_pool_levels]
+		return levels
+
 	with torch.no_grad():
 		for data in tqdm(test_loader):
 								
 			data.to(device)
 			data.edge_attr = data.edge_attr.type(torch.float32)
 			if args.model == 'POOL' or args.model == 'rggnn' or args.model == 'rggnn_gat':
-				output = model(data.x, data.edge_index, data.batch, data.pool)
+				pool_levels = _select_pool_levels(data)
+				output = model(data.x, data.edge_index, data.batch, data.pool, pool_levels)
 			else:
 				output = model(data.x, data.edge_index, data.batch)
 			
@@ -245,6 +266,7 @@ def contract_test(model, load_path=None, logit_adjustment=None):
 	recall = recall_score(all_labels, all_preds, average='macro')
 	precision = precision_score(all_labels, all_preds, average='macro')
 	f1 = f1_score(all_labels, all_preds, average='macro')
+	acc = (all_labels == all_preds).float().mean().item()
 	print('Recall: {}, Precision : {}, F1 : {}'.format(recall, precision, f1))
 	
 	print(f'f1 0 : {f1_score(all_labels, all_preds, labels = [0], average = None)}')
@@ -257,8 +279,16 @@ def contract_test(model, load_path=None, logit_adjustment=None):
 	print('Precision 2 : {}, Recall 2 : {}'.format(precision_score(all_labels, all_preds, labels = [2], average = None), recall_score(all_labels, all_preds, labels = [2], average = None)))
 	print('Precision 3 : {}, Recall 3 : {}'.format(precision_score(all_labels, all_preds, labels = [3], average = None), recall_score(all_labels, all_preds, labels = [3], average = None)))
 	
-	
-	return 0
+
+	metrics_path = f'./models/metrics_{args.coverage}_{args.loss}.csv'
+	write_header = not os.path.isfile(metrics_path)
+	with open(metrics_path, 'a', newline='') as fp:
+		writer = csv.writer(fp)
+		if write_header:
+			writer.writerow(['seed', 'pool_mode', 'max_pool_levels', 'coverage', 'macro_f1', 'macro_precision', 'macro_recall', 'accuracy'])
+		writer.writerow([args.seed, args.pool_mode, args.max_pool_levels, args.coverage, f1, precision, recall, acc])
+
+	return {'macro_f1': f1, 'macro_precision': precision, 'macro_recall': recall, 'accuracy': acc}
 	
 def run(train_data, val_data):
 	"""
@@ -302,12 +332,23 @@ def run(train_data, val_data):
 	for epoch in range(args.epochs):
 		model.train()
 
+		def _select_pool_levels(item):
+			if args.pool_mode == 'single':
+				return None
+			levels = getattr(item, 'pool_levels', None)
+			if levels is None:
+				return None
+			if args.max_pool_levels > 0:
+				return levels[:args.max_pool_levels]
+			return levels
+
 		for data in train_loader:
 			torch.cuda.empty_cache()
 			data = data.to(device)
 			optimizer.zero_grad()
 			if args.model == 'POOL' or args.model == 'rggnn' or args.model == 'rggnn_gat':
-				output = model(data.x, data.edge_index, data.batch, data.pool)
+				pool_levels = _select_pool_levels(data)
+				output = model(data.x, data.edge_index, data.batch, data.pool, pool_levels)
 			else:
 				output = model(data.x, data.edge_index, data.batch)
 			
